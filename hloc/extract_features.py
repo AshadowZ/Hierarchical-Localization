@@ -129,7 +129,7 @@ confs = {
         "output": "feats-xfeat-n5000-r1600",
         "model": {
             "name": "xfeat",
-            "max_keypoints": 5000,
+            "max_keypoints": 4096,
         },
         "preprocessing": {
             "grayscale": False,
