@@ -42,13 +42,6 @@ confs = {
             "features": "aliked",
         },
     },
-    "xfeat+lighterglue": {
-        "output": "matches-xfeat-lighterglue",
-        "model": {
-            "name": "lighterglue",
-            "features": "xfeat",
-        },
-    },
     "superglue": {
         "output": "matches-superglue",
         "model": {
