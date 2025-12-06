@@ -1,5 +1,6 @@
 import argparse
 import collections.abc as collections
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -14,6 +15,7 @@ def main(
     features: Optional[Path] = None,
     ref_list: Optional[Union[Path, List[str]]] = None,
     ref_features: Optional[Path] = None,
+    groupby_folder: bool = False,
 ):
     if image_list is not None:
         if isinstance(image_list, (str, Path)):
@@ -42,11 +44,27 @@ def main(
         names_ref = names_q
 
     pairs = []
-    for i, n1 in enumerate(names_q):
-        for j, n2 in enumerate(names_ref):
-            if self_matching and j <= i:
+    if groupby_folder and self_matching:
+        logger.info(
+            "Generating exhaustive pairs within each folder (Rig/Panorama mode)..."
+        )
+        groups = defaultdict(list)
+        for name in names_q:
+            parent_folder = Path(name).parent.as_posix()
+            groups[parent_folder].append(name)
+
+        for images in groups.values():
+            if len(images) < 2:
                 continue
-            pairs.append((n1, n2))
+            for i, n1 in enumerate(images):
+                for j in range(i + 1, len(images)):
+                    pairs.append((n1, images[j]))
+    else:
+        for i, n1 in enumerate(names_q):
+            for j, n2 in enumerate(names_ref):
+                if self_matching and j <= i:
+                    continue
+                pairs.append((n1, n2))
 
     logger.info(f"Found {len(pairs)} pairs.")
     with open(output, "w") as f:
@@ -60,5 +78,10 @@ if __name__ == "__main__":
     parser.add_argument("--features", type=Path)
     parser.add_argument("--ref_list", type=Path)
     parser.add_argument("--ref_features", type=Path)
+    parser.add_argument(
+        "--groupby_folder",
+        action="store_true",
+        help="Only pair images within the same folder when self-matching.",
+    )
     args = parser.parse_args()
     main(**args.__dict__)

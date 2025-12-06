@@ -3,7 +3,7 @@ import argparse
 import multiprocessing
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pycolmap
 import tqdm
@@ -16,6 +16,8 @@ from .triangulation import (
     import_matches,
     parse_option_args,
 )
+
+OptionsType = Union[Dict[str, Any], pycolmap.IncrementalPipelineOptions]
 
 
 def create_empty_db(database_path: Path):
@@ -37,7 +39,7 @@ def import_images(
     logger.info("Importing images into the database...")
     if options is None:
         options = {}
-    images = list(image_dir.iterdir())
+    images = sorted([p for p in image_dir.rglob("*") if p.is_file()])
     if len(images) == 0:
         raise IOError(f"No images found in {image_dir}.")
     with pycolmap.ostream():
@@ -61,9 +63,13 @@ def incremental_mapping(
     database_path: Path,
     image_dir: Path,
     sfm_path: Path,
-    options: Optional[Dict[str, Any]] = None,
+    options: Optional[OptionsType] = None,
 ) -> dict[int, pycolmap.Reconstruction]:
-    num_images = pycolmap.Database.open(database_path).num_images()
+    with pycolmap.Database.open(database_path) as db:
+        num_frames = db.num_frames()
+        num_images = db.num_images()
+    progress_total = num_frames if num_frames > 0 else num_images
+    progress_unit = "frames" if num_frames > 0 else "images"
     pbars = []
 
     def restart_progress_bar():
@@ -71,19 +77,21 @@ def incremental_mapping(
             pbars[-1].close()
         pbars.append(
             tqdm.tqdm(
-                total=num_images,
+                total=progress_total,
                 desc=f"Reconstruction {len(pbars)}",
-                unit="images",
+                unit=progress_unit,
                 postfix="registered",
             )
         )
         pbars[-1].update(2)
 
+    mapping_options: OptionsType = options if options is not None else {}
+
     reconstructions = pycolmap.incremental_mapping(
         database_path,
         image_dir,
         sfm_path,
-        options=options or {},
+        options=mapping_options,
         initial_image_pair_callback=restart_progress_bar,
         next_image_callback=lambda: pbars[-1].update(1),
     )
@@ -96,14 +104,20 @@ def run_reconstruction(
     database_path: Path,
     image_dir: Path,
     verbose: bool = False,
-    options: Optional[Dict[str, Any]] = None,
+    options: Optional[OptionsType] = None,
 ) -> pycolmap.Reconstruction:
     models_path = sfm_dir / "models"
     models_path.mkdir(exist_ok=True, parents=True)
     logger.info("Running 3D reconstruction...")
+    default_num_threads = min(multiprocessing.cpu_count(), 14)
     if options is None:
         options = {}
-    options = {"num_threads": min(multiprocessing.cpu_count(), 16), **options}
+    if isinstance(options, pycolmap.IncrementalPipelineOptions):
+        current_threads = getattr(options, "num_threads", None)
+        if current_threads is None or current_threads <= 0:
+            options.num_threads = default_num_threads
+    else:
+        options = {"num_threads": default_num_threads, **options}
 
     with OutputCapture(verbose):
         reconstructions = incremental_mapping(
@@ -153,6 +167,7 @@ def main(
     image_list: Optional[List[str]] = None,
     image_options: Optional[Dict[str, Any]] = None,
     mapper_options: Optional[Dict[str, Any]] = None,
+    rig_config: Optional[pycolmap.RigConfig] = None,
 ) -> pycolmap.Reconstruction:
     assert features.exists(), features
     assert pairs.exists(), pairs
@@ -177,6 +192,9 @@ def main(
             min_match_score,
             skip_geometric_verification,
         )
+        if rig_config is not None:
+            logger.info("Applying Camera Rig configuration...")
+            pycolmap.apply_rig_config([rig_config], db)
     if not skip_geometric_verification:
         estimation_and_geometric_verification(database, pairs, verbose)
     reconstruction = run_reconstruction(

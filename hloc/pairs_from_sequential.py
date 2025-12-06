@@ -21,6 +21,7 @@ def main(
     retrieval_path: Optional[Union[Path, str]] = None,
     retrieval_interval: Optional[int] = 2,
     num_loc: Optional[int] = 5,
+    groupby_folder: bool = False,
 ) -> None:
     """
     Generate pairs of images based on sequential matching and optional loop closure.
@@ -65,44 +66,47 @@ def main(
     pairs = []
     N = len(names_q)
 
+    parents: list[str] = []
+    if groupby_folder:
+        parents = [Path(name).parent.name for name in names_q]
+
     for i in range(N - 1):
         for j in range(i + 1, min(i + window_size + 1, N)):
+            if groupby_folder and parents[i] != parents[j]:
+                break
             pairs.append((names_q[i], names_q[j]))
 
             if quadratic_overlap:
                 q = 2 ** (j - i)
                 if q > window_size and i + q < N:
+                    if groupby_folder and parents[i] != parents[i + q]:
+                        continue
                     pairs.append((names_q[i], names_q[i + q]))
 
     if use_loop_closure:
         retrieval_pairs_tmp: Path = output.parent / "retrieval-pairs-tmp.txt"
-
-        # match mask describes for each image, which images NOT to include in retrevial
-        # match search I.e., no reason to get retrieval matches for matches
-        # already included from sequential matching
 
         query_list = names_q[::retrieval_interval]
         M = len(query_list)
         match_mask = np.zeros((M, N), dtype=bool)
 
         for i in range(M):
+            global_i = i * retrieval_interval
+
+            def set_mask(idx_origin: int, idx_target: int) -> None:
+                if idx_target < 0 or idx_target >= N:
+                    return
+                if groupby_folder and parents[idx_origin] != parents[idx_target]:
+                    return
+                match_mask[i][idx_target] = 1
+
             for k in range(window_size + 1):
-                if i * retrieval_interval - k >= 0 and i * retrieval_interval - k < N:
-                    match_mask[i][i * retrieval_interval - k] = 1
-                if i * retrieval_interval + k >= 0 and i * retrieval_interval + k < N:
-                    match_mask[i][i * retrieval_interval + k] = 1
+                set_mask(global_i, global_i - k)
+                set_mask(global_i, global_i + k)
 
                 if quadratic_overlap:
-                    if (
-                        i * retrieval_interval - 2**k >= 0
-                        and i * retrieval_interval - 2**k < N
-                    ):
-                        match_mask[i][i * retrieval_interval - 2**k] = 1
-                    if (
-                        i * retrieval_interval + 2**k >= 0
-                        and i * retrieval_interval + 2**k < N
-                    ):
-                        match_mask[i][i * retrieval_interval + 2**k] = 1
+                    set_mask(global_i, global_i - 2**k)
+                    set_mask(global_i, global_i + 2**k)
 
         pairs_from_retrieval.main(
             retrieval_path,
@@ -119,7 +123,8 @@ def main(
             for match in val:
                 pairs.append((key, match))
 
-        os.unlink(retrieval_pairs_tmp)
+        if retrieval_pairs_tmp.exists():
+            os.unlink(retrieval_pairs_tmp)
 
     logger.info(f"Found {len(pairs)} pairs.")
     with open(output, "w") as f:
@@ -142,6 +147,11 @@ if __name__ == "__main__":
         "--quadratic_overlap",
         action="store_true",
         help="Whether to match images against their quadratic neighbors.",
+    )
+    parser.add_argument(
+        "--groupby_folder",
+        action="store_true",
+        help="Restrict sequential matching to within the same parent folder.",
     )
     args = parser.parse_args()
     main(**args.__dict__)
